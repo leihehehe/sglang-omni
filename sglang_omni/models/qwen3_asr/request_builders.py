@@ -76,7 +76,7 @@ def _extract_audio_features(
     features = extracted.input_features
     feature_attention_mask = getattr(extracted, "attention_mask", None)
     if feature_attention_mask is None:
-    # WhisperFeatureExtractor normally returns one; fall back to all-valid.
+        # WhisperFeatureExtractor normally returns one; fall back to all-valid.
         feature_attention_mask = torch.ones(
             (features.shape[0], features.shape[-1]), dtype=torch.long
         )
