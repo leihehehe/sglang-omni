@@ -285,8 +285,9 @@ def test_omni_scheduler_requeues_retracted_request_after_refresh() -> None:
     submitted: list[tuple[object, object]] = []
 
     class DeferredExecutor:
-        def submit(self, callback, req):  # noqa: ANN001, ANN202
-            submitted.append((callback, req))
+        def submit(self, fn, *args):  # noqa: ANN001, ANN002, ANN202
+            del fn  # the real executor runs fn(*args); this stub fakes its result
+            submitted.append(args)
             outer: concurrent.futures.Future[object] = concurrent.futures.Future()
             outer.set_result(refresh_future)
             return outer
@@ -369,6 +370,77 @@ def test_omni_scheduler_failed_refresh_aborts_request() -> None:
     assert aborted == [req.rid]
     assert req._omni_data is None
     assert scheduler._pending_request_refreshes == {}
+
+
+def test_omni_scheduler_refresh_rejects_non_future_return_direct_call() -> None:
+    """executor is None: _start_request_refreshes calls the callback
+    directly. A callback that forgets to return a Future must fail this
+    request loudly (TypeError, aborted) instead of _drain_request_refreshes
+    crashing on `.done()` or silently readmitting an unrefreshed request."""
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    req = SimpleNamespace(rid="req-1", _omni_data=object())
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_refreshes = {}
+    scheduler._aborted_request_ids = set()
+    scheduler._request_build_executor = None
+    scheduler._weight_update_request_refresh = lambda _req: None  # bug: no Future
+
+    OmniScheduler._start_request_refreshes(scheduler, [req])
+
+    pending_req, pending_future = scheduler._pending_request_refreshes[req.rid]
+    assert pending_req is req
+    assert pending_future.done()
+    assert isinstance(pending_future.exception(), TypeError)
+
+    errors: list[tuple[str, Exception]] = []
+    aborted: list[str] = []
+    scheduler._emit_request_error = lambda rid, exc: errors.append((rid, exc))
+    scheduler.abort = aborted.append
+
+    OmniScheduler._drain_request_refreshes(scheduler)
+
+    assert aborted == [req.rid]
+    assert isinstance(errors[0][1], TypeError)
+    assert scheduler._pending_request_refreshes == {}
+
+
+def test_omni_scheduler_refresh_rejects_non_future_return_via_executor() -> None:
+    """executor is not None: the callback runs on a worker thread, and only
+    the executor's own wrapper future is guaranteed to be a real Future --
+    the callback's actual return value is not visible until that wrapper
+    resolves. A callback that forgets to return a Future must still fail
+    this request loudly rather than being silently treated as a finished
+    refresh."""
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    req = SimpleNamespace(rid="req-1", _omni_data=object())
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._pending_request_refreshes = {}
+    scheduler._aborted_request_ids = set()
+    scheduler._weight_update_request_refresh = lambda _req: None  # bug: no Future
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    scheduler._request_build_executor = executor
+    try:
+        OmniScheduler._start_request_refreshes(scheduler, [req])
+
+        _, pending_future = scheduler._pending_request_refreshes[req.rid]
+        assert isinstance(pending_future.exception(timeout=2), TypeError)
+
+        errors: list[tuple[str, Exception]] = []
+        aborted: list[str] = []
+        scheduler._emit_request_error = lambda rid, exc: errors.append((rid, exc))
+        scheduler.abort = aborted.append
+
+        OmniScheduler._drain_request_refreshes(scheduler)
+
+        assert aborted == [req.rid]
+        assert isinstance(errors[0][1], TypeError)
+        assert scheduler._pending_request_refreshes == {}
+    finally:
+        executor.shutdown(wait=True)
 
 
 def test_omni_scheduler_flush_cache_has_upstream_idle_compat_fields() -> None:

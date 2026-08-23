@@ -2185,6 +2185,19 @@ class OmniScheduler:
                 pass
             self._drain_request_build_results()
 
+    @staticmethod
+    def _invoke_refresh_callback(
+        callback: Callable[[Any], Future[Any]], req: Any
+    ) -> Future[Any]:
+        """Call the refresh callback and enforce that it returns a Future."""
+        future = callback(req)
+        if not isinstance(future, Future):
+            raise TypeError(
+                "weight_update_request_refresh must return a "
+                f"concurrent.futures.Future, got {type(future).__name__}"
+            )
+        return future
+
     def _start_request_refreshes(self, requests: list[Any]) -> None:
         callback = self._weight_update_request_refresh
         assert callback is not None
@@ -2192,9 +2205,11 @@ class OmniScheduler:
         for req in requests:
             try:
                 if executor is None:
-                    future = callback(req)
+                    future = self._invoke_refresh_callback(callback, req)
                 else:
-                    future = executor.submit(callback, req)
+                    future = executor.submit(
+                        self._invoke_refresh_callback, callback, req
+                    )
             except Exception as exc:
                 future = Future()
                 future.set_exception(exc)
