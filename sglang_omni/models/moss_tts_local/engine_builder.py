@@ -15,6 +15,7 @@ class MossTtsLocalEngineBuilder(TtsEngineBuilder):
     model_name = "MOSS-TTS Local"
     context_length = 8192
     model_arch_override = "MossTTSLocalSGLangModel"
+    supports_breakable_prefill_cuda_graph = True
 
     def __init__(
         self,

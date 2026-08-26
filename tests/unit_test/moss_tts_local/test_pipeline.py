@@ -921,6 +921,53 @@ def test_colocated_moss_ar_abort_callback_requires_model(monkeypatch):
     assert reset_calls == ["req-1"]
 
 
+def test_moss_local_engine_builder_allows_breakable_prefill_as_opt_in():
+    from sglang_omni.models.moss_tts_local.engine_builder import (
+        MossTtsLocalEngineBuilder,
+    )
+
+    builder = MossTtsLocalEngineBuilder(
+        enable_async_decode=False,
+        async_decode_min_batch_size=2,
+        total_gpu_memory_fraction=None,
+        codec_mem_reserve=0.05,
+    )
+
+    assert builder.supports_breakable_prefill_cuda_graph is True
+    assert "cuda_graph_backend_prefill" not in builder.generation_defaults(
+        dtype="bfloat16"
+    )
+
+
+def test_moss_local_prefill_uses_private_sidecar():
+    pytest.importorskip("sglang")
+
+    from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
+    from sglang_omni.models.moss_tts_local.model_runner import (
+        MossTTSLocalModelRunner,
+    )
+
+    runner = MossTTSLocalModelRunner.__new__(MossTTSLocalModelRunner)
+    input_embeds = torch.tensor([[0.0, 1.0], [13.0, 14.0]])
+    runner._build_prefill_input_embeds = lambda *_args: input_embeds
+    mm_inputs = [object()]
+    forward_batch = types.SimpleNamespace(
+        input_ids=torch.tensor([100, 101], dtype=torch.long),
+        input_embeds=None,
+        replace_embeds=None,
+        mm_inputs=mm_inputs,
+    )
+
+    result = runner.custom_prefill_forward(forward_batch, object(), [object()])
+
+    assert result is None
+    assert forward_batch.input_embeds is None
+    assert forward_batch.mm_inputs is mm_inputs
+    payload = get_omni_prefill_inputs(forward_batch)
+    assert payload is not None
+    assert payload.input_embeds is input_embeds
+
+
 def test_colocated_moss_ar_factory_accepts_explicit_effective_budget():
     pytest.importorskip("PIL")
 
