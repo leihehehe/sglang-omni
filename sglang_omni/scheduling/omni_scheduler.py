@@ -1906,8 +1906,6 @@ class OmniScheduler:
 
     def _admin_model_info(self) -> dict[str, Any]:
         info = self.model_worker.model_info()
-        if self._model_runner is not None and hasattr(self._model_runner, "stats"):
-            info.update(self._model_runner.stats())
         with self._request_admission_lock:
             request_build_pending = len(self._pending_request_builds)
             request_admission_pending = len(self._pending_request_admissions)

@@ -68,8 +68,8 @@ class _PredictorDecodeGraph:
     """CUDA graph over the full per-token predictor chain for one batch bucket.
 
     One graph per (bucket, sampling signature): the signature pins the host
-    branches of the eager sampling path (argmax vs sampled vs mixed, top-k
-    bound, top-p presence), so replay reproduces the eager sampling bits.
+    branches of the eager sampling path (argmax vs sampled, top-k bound,
+    top-p presence), so replay reproduces the eager sampling bits.
     Per-step inputs reach the captured region through persistent device
     buffers written with device-side copies before replay.
     """
@@ -521,7 +521,6 @@ class Qwen3TTSTalker(nn.Module):
         self._predictor_graph_capacity_fallback_count = 0
         self._predictor_graph_capacity_warned = False
         self._predictor_graph_capture_count = 0
-        self._predictor_graph_replay_count = 0
         self._predictor_graph_pool = None
         _bind_default_weight_loaders(self)
         self._cached_params_dict = dict(self.named_parameters())
@@ -1229,11 +1228,11 @@ class Qwen3TTSTalker(nn.Module):
             self._sub_sampled_max_top_k,
             self._sub_sampled_has_unbounded_top_k,
         )
-        mode = signature[0]
+        sampled = signature[0] == "sampled"
         try:
             self._sub_batch_size = bucket_size
-            self._sub_has_sampled_rows = mode == "sampled"
-            self._sub_sample_count = bucket_size if mode == "sampled" else 0
+            self._sub_has_sampled_rows = sampled
+            self._sub_sample_count = bucket_size if sampled else 0
             _, max_top_k, has_top_p, has_unbounded_top_k = signature
             self._sub_sampled_max_top_k = max_top_k
             self._sub_sampled_has_top_p = has_top_p
@@ -1337,7 +1336,6 @@ class Qwen3TTSTalker(nn.Module):
             self._predictor_graph_capture_count += 1
             logger.info("Captured Qwen3-TTS predictor CUDA graph for key=%s", key)
         result = graph.replay(layer0_codes, talker_hidden, semantic_positions)
-        self._predictor_graph_replay_count += 1
         return result
 
     def _code_predictor_forward_incremental(
@@ -1520,10 +1518,6 @@ class Qwen3TTSTalker(nn.Module):
             row_indices=row_indices,
             semantic_positions=batch_positions,
         )
-        # Note: always compute argmax + where here (never take the
-        # all-sampled shortcut) so a fully-sampled batch and a mixed batch
-        # replay the exact same captured kernel sequence, letting them share
-        # one CUDA graph key instead of capturing two ("sampled"/"mixed").
         argmax_tokens = torch.argmax(logits, dim=-1).to(dtype=torch.long)
         return torch.where(
             self._sub_do_sample_tensor[:batch_size],

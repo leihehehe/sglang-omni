@@ -173,7 +173,6 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
     talker._predictor_graph_capacity_fallback_count = 0
     talker._predictor_graph_capacity_warned = False
     talker._predictor_graph_capture_count = 0
-    talker._predictor_graph_replay_count = 0
     talker._predictor_graph_pool = None
     return talker
 

@@ -4186,6 +4186,7 @@ def test_qwen3_tts_prepare_decode_buffers_collects_private_subtalker_seeds(
     talker._sub_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
     talker._sub_do_sample_tensor = torch.empty(2, dtype=torch.bool)
     talker._sub_identity_row_indices_tensor = torch.arange(2, dtype=torch.long)
+    talker._sub_sample_row_indices_tensor = torch.empty(2, dtype=torch.long)
     requests = [
         SimpleNamespace(
             data=Qwen3TTSSGLangRequestData(
@@ -4275,6 +4276,8 @@ def test_qwen3_tts_subtalker_sampling_batches_sampled_path_without_global_rng(
     talker._sub_sampling_seed_tensor = torch.tensor([17, 23])
     talker._sub_do_sample_tensor = torch.tensor([True, True])
     talker._sub_identity_row_indices_tensor = torch.tensor([0, 1])
+    talker._sub_sample_row_indices_tensor = torch.tensor([0, 1])
+    talker._sub_sample_max_row_index = 1
     talker._sub_sample_count = 2
     talker._sub_has_sampled_rows = True
     talker._sub_sampled_has_top_p = False
@@ -4391,6 +4394,8 @@ def test_qwen3_tts_sampled_subtalker_requires_semantic_positions(
     talker._sub_sampling_seed_tensor = torch.tensor([17])
     talker._sub_do_sample_tensor = torch.tensor([True])
     talker._sub_identity_row_indices_tensor = torch.tensor([0])
+    talker._sub_sample_row_indices_tensor = torch.tensor([0])
+    talker._sub_sample_max_row_index = 0
     talker._sub_sample_count = 1
     talker._sub_has_sampled_rows = True
     talker._sub_sampled_has_top_p = False

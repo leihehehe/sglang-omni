@@ -205,7 +205,6 @@ def test_qwen3_tts_deterministic_batch_invariance(
 def test_qwen3_tts_mixed_sampled_argmax_batch_invariance(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
-    """Match serial execution and a mixed sampled/greedy batch of eight."""
     if not torch.cuda.is_available():
         pytest.skip("Qwen3-TTS batch invariance requires CUDA")
     if not Path(DATASET).exists():
