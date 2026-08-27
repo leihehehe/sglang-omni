@@ -304,14 +304,14 @@ def _make_subtalker_dosample_send_fn(
         api_url,
         **common_send_kwargs,
         **generation_kwargs,
-        subtalker_dosample=True,
+        stage_params={"tts_engine": {"subtalker_dosample": True}},
     )
     send_fn_false = make_tts_send_fn(
         config.model,
         api_url,
         **common_send_kwargs,
         **generation_kwargs,
-        subtalker_dosample=False,
+        stage_params={"tts_engine": {"subtalker_dosample": False}},
     )
     send_fn_by_id = {
         sample_id: (send_fn_true if dosample else send_fn_false)
