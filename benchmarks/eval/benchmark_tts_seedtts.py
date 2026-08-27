@@ -296,7 +296,6 @@ def _make_subtalker_dosample_send_fn(
 ) -> SendFn:
     # Note (Shulei He): Qwen3-TTS-only: alternate subtalker_dosample per request for mixed
     # sampled/greedy predictor traffic.
-
     dosample_by_id = _subtalker_dosample_flags(
         samples, config.subtalker_dosample_ratio
     )

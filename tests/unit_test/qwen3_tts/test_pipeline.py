@@ -4912,6 +4912,7 @@ def _make_prep_talker(monkeypatch):
     talker._sub_sampling_seed_tensor = torch.empty(2, dtype=torch.long)
     talker._sub_do_sample_tensor = torch.empty(2, dtype=torch.bool)
     talker._sub_identity_row_indices_tensor = torch.arange(2, dtype=torch.long)
+    talker._sub_sample_row_indices_tensor = torch.empty(2, dtype=torch.long)
     return Qwen3TTSTalker, talker
 
 
