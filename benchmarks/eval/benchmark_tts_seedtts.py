@@ -90,7 +90,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmarks.benchmarker.data import RequestResult
-from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
+from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, SendFn
 from benchmarks.benchmarker.utils import managed_omni_server
 from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.metrics.performance import (
@@ -162,6 +162,10 @@ class TtsSeedttsBenchmarkConfig:
     top_k: int | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
+    # Note (Shulei He): Fraction of requests sent with subtalker_dosample=True (rest use False),
+    # deterministically alternated by sample index so runs are reproducible.
+    # None leaves subtalker_dosample unset, i.e. the server-side default applies.
+    subtalker_dosample_ratio: float | None = None
     warmup: int = 1
     concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
@@ -208,6 +212,21 @@ def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
     return generation_kwargs
 
 
+def _subtalker_dosample_flags(
+    samples: list[SampleInput],
+    ratio: float,
+) -> dict[str, bool]:
+    if not 0.0 <= ratio <= 1.0:
+        raise ValueError(
+            f"--subtalker-dosample-ratio must be in [0, 1], got {ratio}"
+        )
+    flags: dict[str, bool] = {}
+    for index, sample in enumerate(samples):
+        dosample = math.floor((index + 1) * ratio) > math.floor(index * ratio)
+        flags[sample.sample_id] = dosample
+    return flags
+
+
 def _build_results_config(
     config: TtsSeedttsBenchmarkConfig,
     *,
@@ -229,6 +248,7 @@ def _build_results_config(
         "sample_offset": config.sample_offset,
         "max_new_tokens": config.max_new_tokens,
         "seed": config.seed,
+        "subtalker_dosample_ratio": config.subtalker_dosample_ratio,
         "token_count": config.token_count,
         "warmup": config.warmup,
         "concurrency": config.concurrency,
@@ -258,6 +278,43 @@ def _load_benchmark_samples(config: TtsSeedttsBenchmarkConfig) -> list[SampleInp
     return load_seedtts_samples(config.meta, config.max_samples, split=config.lang)
 
 
+def _make_subtalker_dosample_send_fn(
+    config: TtsSeedttsBenchmarkConfig,
+    api_url: str,
+    common_send_kwargs: dict,
+    generation_kwargs: dict,
+    samples: list[SampleInput],
+) -> SendFn:
+    # Note (Shulei He): Qwen3-TTS-only: alternate subtalker_dosample per request for mixed
+    # sampled/greedy predictor traffic.
+    dosample_by_id = _subtalker_dosample_flags(
+        samples, config.subtalker_dosample_ratio
+    )
+    send_fn_true = make_tts_send_fn(
+        config.model,
+        api_url,
+        **common_send_kwargs,
+        **generation_kwargs,
+        stage_params={"tts_engine": {"subtalker_dosample": True}},
+    )
+    send_fn_false = make_tts_send_fn(
+        config.model,
+        api_url,
+        **common_send_kwargs,
+        **generation_kwargs,
+        stage_params={"tts_engine": {"subtalker_dosample": False}},
+    )
+    send_fn_by_id = {
+        sample_id: (send_fn_true if dosample else send_fn_false)
+        for sample_id, dosample in dosample_by_id.items()
+    }
+
+    async def send_fn(session, sample):
+        return await send_fn_by_id[sample.sample_id](session, sample)
+
+    return send_fn
+
+
 async def run_tts_seedtts_benchmark(
     config: TtsSeedttsBenchmarkConfig,
     *,
@@ -282,9 +339,7 @@ async def run_tts_seedtts_benchmark(
         os.makedirs(config.output_dir, exist_ok=True)
 
     generation_kwargs = _build_generation_kwargs(config)
-    send_fn = make_tts_send_fn(
-        config.model,
-        api_url,
+    common_send_kwargs = dict(
         response_format=config.response_format,
         stream=config.stream,
         initial_codec_chunk_frames=config.initial_codec_chunk_frames,
@@ -295,8 +350,15 @@ async def run_tts_seedtts_benchmark(
         task_type=config.task_type,
         instructions=config.instructions,
         save_audio_dir=save_audio_dir,
-        **generation_kwargs,
     )
+    if config.subtalker_dosample_ratio is None:
+        send_fn = make_tts_send_fn(
+            config.model, api_url, **common_send_kwargs, **generation_kwargs
+        )
+    else:
+        send_fn = _make_subtalker_dosample_send_fn(
+            config, api_url, common_send_kwargs, generation_kwargs, samples
+        )
 
     runner = BenchmarkRunner(
         RunConfig(
@@ -386,6 +448,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         top_k=args.top_k,
         repetition_penalty=args.repetition_penalty,
         seed=args.seed,
+        subtalker_dosample_ratio=args.subtalker_dosample_ratio,
         warmup=args.warmup,
         concurrency=args.concurrency,
         request_rate=args.request_rate,
@@ -748,6 +811,18 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Per-request sampler seed for reproducible generation.",
+    )
+    parser.add_argument(
+        "--subtalker-dosample-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Optional model-specific (Qwen3-TTS only) fraction of requests "
+            "sent with subtalker_dosample=True (the rest use False), "
+            "deterministically interleaved by sample index. 1.0 = all "
+            "sampled, 0.0 = all greedy, 0.5 = alternating mixed traffic. "
+            "Omit to leave subtalker_dosample unset (server-side default)."
+        ),
     )
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument(
