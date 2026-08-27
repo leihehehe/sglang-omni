@@ -566,22 +566,27 @@ def test_capture_failure_disables_key_and_falls_back(
 def test_capture_failure_restores_live_sub_state(monkeypatch: pytest.MonkeyPatch):
     device = torch.device("cuda")
     talker = _build_talker(device)
-    talker.prepare_decode_buffers(_uniform_requests(2))
+    talker.prepare_decode_buffers(
+        [
+            _request(dosample=True, sub_seed=1000, semantic_seed=2000),
+            _request(dosample=False, sub_seed=1001, semantic_seed=2001),
+        ]
+    )
     layer0, hidden, positions = _step_inputs(2, device)
 
     class _BoomGraph:
         def __init__(self, model, bucket_size, signature, **kwargs) -> None:
             del kwargs
-            with model._predictor_graph_capture_state(4, ("argmax", 0, False, False)):
+            with model._predictor_graph_capture_state(bucket_size, signature):
                 raise RuntimeError("simulated capture failure")
 
     monkeypatch.setattr(sglang_model_module, "_PredictorDecodeGraph", _BoomGraph)
     _run_forward(talker, layer0, hidden, positions)
 
     assert talker._sub_batch_size == 2
-    assert talker._sub_sample_count == 2
+    assert talker._sub_sample_count == 1
     assert talker._sub_has_sampled_rows is True
-    assert talker._sub_do_sample_tensor[:2].tolist() == [True, True]
+    assert talker._sub_do_sample_tensor[:2].tolist() == [True, False]
 
 
 class _NoHostReadbackTensor(torch.Tensor):
