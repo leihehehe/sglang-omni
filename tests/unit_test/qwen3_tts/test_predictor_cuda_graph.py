@@ -405,7 +405,6 @@ def test_mixed_sampled_argmax_rows_use_graph_bit_identity(
     monkeypatch.setattr(
         Qwen3TTSTalker, "_sample_subtalker_token_seeded", real_seeded
     )
-    
     talker.prepare_decode_buffers(
         [_request(dosample=False), _request(dosample=False)]
     )
