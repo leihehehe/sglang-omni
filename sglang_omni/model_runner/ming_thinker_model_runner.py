@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Ming-Omni thinker adapter for standard eager and prefill-graph execution."""
+"""Multimodal prefill injection for Ming."""
 
 from __future__ import annotations
 
