@@ -226,9 +226,7 @@ def _subtalker_dosample_flags(
     ratio: float,
 ) -> dict[str, bool]:
     if not 0.0 <= ratio <= 1.0:
-        raise ValueError(
-            f"--subtalker-dosample-ratio must be in [0, 1], got {ratio}"
-        )
+        raise ValueError(f"--subtalker-dosample-ratio must be in [0, 1], got {ratio}")
     flags: dict[str, bool] = {}
     for index, sample in enumerate(samples):
         dosample = math.floor((index + 1) * ratio) > math.floor(index * ratio)
@@ -296,9 +294,7 @@ def _make_subtalker_dosample_send_fn(
 ) -> SendFn:
     # Note (Shulei He): Qwen3-TTS-only: alternate subtalker_dosample per request for mixed
     # sampled/greedy predictor traffic.
-    dosample_by_id = _subtalker_dosample_flags(
-        samples, config.subtalker_dosample_ratio
-    )
+    dosample_by_id = _subtalker_dosample_flags(samples, config.subtalker_dosample_ratio)
     send_fn_true = make_tts_send_fn(
         config.model,
         api_url,

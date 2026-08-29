@@ -402,22 +402,18 @@ def test_mixed_sampled_argmax_rows_use_graph_bit_identity(
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
 
-    monkeypatch.setattr(
-        Qwen3TTSTalker, "_sample_subtalker_token_seeded", real_seeded
-    )
-    talker.prepare_decode_buffers(
-        [_request(dosample=False), _request(dosample=False)]
-    )
+    monkeypatch.setattr(Qwen3TTSTalker, "_sample_subtalker_token_seeded", real_seeded)
+    talker.prepare_decode_buffers([_request(dosample=False), _request(dosample=False)])
     argmax_codes, _ = talker._code_predictor_forward_incremental(
         layer0, hidden, semantic_positions=positions
     )
 
-    assert not torch.equal(graph_codes[0, 1:], argmax_codes[0, 1:]), (
-        "sampled row matches pure argmax -- the seeded path was not exercised"
-    )
-    assert torch.equal(graph_codes[1, 1:], argmax_codes[1, 1:]), (
-        "argmax row was affected by the seeded-sampling sentinel"
-    )
+    assert not torch.equal(
+        graph_codes[0, 1:], argmax_codes[0, 1:]
+    ), "sampled row matches pure argmax -- the seeded path was not exercised"
+    assert torch.equal(
+        graph_codes[1, 1:], argmax_codes[1, 1:]
+    ), "argmax row was affected by the seeded-sampling sentinel"
 
 
 @pytest.mark.accelerator
