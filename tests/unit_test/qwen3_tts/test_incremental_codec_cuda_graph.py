@@ -342,8 +342,8 @@ def test_incremental_codec_graphs_capture_during_vocoder_warmup() -> None:
     assert captures == [
         "whole-sequence-initial",
         "whole-sequence-followup",
-        "cold",
         "warm",
+        "cold",
     ]
 
 
@@ -427,6 +427,87 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
     assert arena.scatters == [([0], graph_state)]
     assert len(deltas) == 1
     assert deltas[0].tolist() == [10.0, 11.0]
+
+
+@pytest.mark.accelerator
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_incremental_codec_launch_falls_back_to_eager_on_graph_miss() -> None:
+    device = torch.device("cuda", torch.cuda.current_device())
+    scheduler = Qwen3TTSStreamingVocoderScheduler.__new__(
+        Qwen3TTSStreamingVocoderScheduler
+    )
+    scheduler._device = device
+    scheduler._cuda_decode_failed = False
+    scheduler._deterministic_inference = False
+    scheduler._samples_per_frame = 1
+    scheduler._pinned_staging_disabled = True
+    scheduler._decode_staging = threading.local()
+    scheduler._decode_stream = torch.cuda.Stream(device=device)
+    scheduler._followup_decode_stream = torch.cuda.Stream(device=device)
+
+    cohort_state = _state(1, offset=5, device=device)
+    eager_waveform = torch.tensor([[[20.0, 21.0]]], device=device)
+
+    class GraphRunner:
+        calls = 0
+
+        def decode(self, codes, state):
+            self.calls += 1
+            assert codes.shape == (1, 2, 2)
+            assert state is cohort_state
+            return None
+
+    class EagerDecoder:
+        calls = 0
+
+        def decode(self, codes, state):
+            self.calls += 1
+            assert codes.shape == (1, 2, 2)
+            assert state is cohort_state
+            state.frame_positions = state.frame_positions + 2
+            return eager_waveform
+
+    class Arena:
+        def __init__(self) -> None:
+            self.scatters = []
+
+        def scatter(self, slots, state) -> None:
+            self.scatters.append((slots, state))
+
+    graph_runner = GraphRunner()
+    eager_decoder = EagerDecoder()
+    arena = Arena()
+    scheduler._initial_incremental_decode_graphs = None
+    scheduler._followup_incremental_decode_graphs = graph_runner
+    plan = _IncrementalDecodePlan(
+        decoder_input=torch.tensor([[[1, 2], [3, 4]]], device=device),
+        slot=0,
+        fresh_frames=2,
+        reference_trim_frames=0,
+        generated_frames=2,
+        emitted_generated_frames=0,
+    )
+    batch = _IncrementalDecodeBatch(
+        decoder=eager_decoder,
+        arena=arena,
+        slots=[0],
+        cohort_state=cohort_state,
+    )
+
+    handle = scheduler._launch_decode_plans(
+        [plan],
+        stream=scheduler._followup_decode_stream,
+        incremental=batch,
+    )
+    deltas = handle.resolve()
+
+    assert graph_runner.calls == 1
+    assert eager_decoder.calls == 1
+    assert batch.cohort_state is cohort_state
+    assert cohort_state.frame_positions.tolist() == [7]
+    assert arena.scatters == [([0], cohort_state)]
+    assert len(deltas) == 1
+    assert deltas[0].tolist() == [20.0, 21.0]
 
 
 def test_incremental_codec_graph_cohort_splits_at_largest_bucket() -> None:
