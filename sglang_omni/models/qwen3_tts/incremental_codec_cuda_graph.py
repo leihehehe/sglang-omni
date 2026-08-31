@@ -598,7 +598,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             with torch.cuda.device(self._device):
                 torch.cuda.synchronize(self._device)
             synchronized = True
-        except Exception as synchronize_exc:  # noqa: BLE001 - retain unsafe buffers
+        except RuntimeError as synchronize_exc:
             logger.warning(
                 "Qwen3-TTS incremental Codec graph rollback synchronize failed; "
                 "retaining capture resources for the process lifetime: %s",
@@ -622,7 +622,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         try:
             with torch.cuda.device(self._device):
                 torch.cuda.empty_cache()
-        except Exception as cleanup_exc:  # noqa: BLE001 - cleanup is best-effort
+        except RuntimeError as cleanup_exc:
             logger.warning(
                 "Qwen3-TTS incremental Codec graph rollback cleanup failed: %s",
                 cleanup_exc,
@@ -730,7 +730,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             with torch.cuda.device(self._device):
                 torch.cuda.synchronize(self._device)
             synchronized = True
-        except Exception as synchronize_exc:  # noqa: BLE001 - retain unsafe buffers
+        except RuntimeError as synchronize_exc:
             logger.warning(
                 "Qwen3-TTS incremental Codec graph runtime synchronize failed; "
                 "retaining graph buffers for the process lifetime: %s",
@@ -748,7 +748,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         try:
             with torch.cuda.device(self._device):
                 torch.cuda.empty_cache()
-        except Exception as cleanup_exc:
+        except RuntimeError as cleanup_exc:
             logger.warning(
                 "Qwen3-TTS incremental Codec graph runtime cleanup failed: %s",
                 cleanup_exc,
