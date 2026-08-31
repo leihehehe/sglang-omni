@@ -40,7 +40,6 @@ class IncrementalCodecGraphResult:
 
     waveform: torch.Tensor
     state: Qwen3TTSIncrementalCodecState
-    key: IncrementalCodecGraphKey
 
 
 @dataclass(slots=True)
@@ -230,7 +229,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         self._graphs: dict[IncrementalCodecGraphKey, _CapturedIncrementalCodecGraph] = (
             {}
         )
-        self._failed_capture_keys: set[IncrementalCodecGraphKey] = set()
         self._capture_complete = False
         self._pool: Any | None = None
         self._capture_stream: torch.cuda.Stream | None = None
@@ -273,16 +271,12 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                         pool=pool,
                         capture_stream=capture_stream,
                     )
-                    capture_stream.synchronize()
                     gc.collect()
                     torch.cuda.empty_cache()
                     self._require_headroom(
                         torch.cuda.mem_get_info(self._device)[0],
                         key=key,
                     )
-                capture_stream.synchronize()
-                gc.collect()
-                torch.cuda.empty_cache()
                 after = self._memory_snapshot()
                 self._memory_stats["after"] = after
                 self._memory_stats["graph_footprint_bytes"] = max(
@@ -290,9 +284,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                     after["allocated_bytes"] - before["allocated_bytes"],
                     after["reserved_bytes"] - before["reserved_bytes"],
                 )
-                self._require_headroom(after["free_bytes"])
         except Exception as exc:
-            self._failed_capture_keys.update(keys)
             reason = f"capture_failed: {type(exc).__name__}: {exc}"
             self._rollback_capture(
                 temporary,
@@ -586,7 +578,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         return IncrementalCodecGraphResult(
             waveform=entry.waveform[:batch_size],
             state=_slice_state_rows(entry.output_state, batch_size),
-            key=key,
         )
 
     def _validate_codes(self, codes: torch.Tensor) -> None:
@@ -664,16 +655,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                     }
                     for key in sorted(
                         self._graphs,
-                        key=lambda item: (item.fresh_frames, item.batch_bucket),
-                    )
-                ],
-                "failed_capture_keys": [
-                    {
-                        "fresh_frames": key.fresh_frames,
-                        "batch_bucket": key.batch_bucket,
-                    }
-                    for key in sorted(
-                        self._failed_capture_keys,
                         key=lambda item: (item.fresh_frames, item.batch_bucket),
                     )
                 ],

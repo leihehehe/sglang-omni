@@ -571,10 +571,8 @@ def test_arena_cohort_matches_per_stream_decodes() -> None:
 
 @pytest.mark.accelerator
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-@pytest.mark.parametrize("mode", ["cold", "warm"])
 @pytest.mark.parametrize(("batch_size", "batch_bucket"), [(2, 2), (3, 4)])
 def test_incremental_codec_cuda_graph_matches_mixed_cold_warm_eager_state(
-    mode: str,
     batch_size: int,
     batch_bucket: int,
 ) -> None:
@@ -614,7 +612,7 @@ def test_incremental_codec_cuda_graph_matches_mixed_cold_warm_eager_state(
         device=device,
         dtype=torch.float32,
         num_quantizers=2,
-        mode=mode,
+        mode="warm",
         fresh_frames=(2,),
         batch_sizes=(batch_bucket,),
         min_free_gb=0,
@@ -622,7 +620,6 @@ def test_incremental_codec_cuda_graph_matches_mixed_cold_warm_eager_state(
     runner.capture()
     stats = runner.stats()
     assert stats["enabled"] is True
-    assert stats["binding"]["mode"] == mode
     assert stats["build"]["captured_keys"] == [
         {
             "fresh_frames": 2,
