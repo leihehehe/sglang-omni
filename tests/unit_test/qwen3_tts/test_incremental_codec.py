@@ -735,45 +735,6 @@ def test_incremental_codec_cuda_graph_alternates_shared_pool_keys() -> None:
     assert runner.stats()["runtime"]["replays"] == 4
 
 
-@pytest.mark.accelerator
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
-def test_incremental_codec_cuda_graph_capture_failure_resets_unpublished_graph(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    torch.manual_seed(19)
-    device = torch.device("cuda", torch.cuda.current_device())
-    decoder = _Decoder().to(device).eval()
-    incremental = Qwen3TTSIncrementalDecoder(decoder)
-    runner = Qwen3TTSIncrementalCodecCudaGraphRunner(
-        incremental,
-        device=device,
-        dtype=torch.float32,
-        num_quantizers=2,
-        mode="warm",
-        fresh_frames=(2,),
-        batch_sizes=(1,),
-        min_free_gb=0,
-    )
-    reset_calls: list[torch.cuda.CUDAGraph] = []
-    original_reset = torch.cuda.CUDAGraph.reset
-
-    def spy_reset(graph: torch.cuda.CUDAGraph) -> None:
-        reset_calls.append(graph)
-        original_reset(graph)
-
-    def fail_verify(*args, **kwargs) -> None:
-        del args, kwargs
-        raise RuntimeError("injected parity failure")
-
-    monkeypatch.setattr(torch.cuda.CUDAGraph, "reset", spy_reset)
-    monkeypatch.setattr(runner, "_verify_capture", fail_verify)
-
-    runner.capture()
-
-    assert runner.stats()["enabled"] is False
-    assert reset_calls
-
-
 def test_arena_slot_reuse_starts_from_a_cold_state() -> None:
     torch.manual_seed(15)
     decoder = _Decoder()

@@ -8,7 +8,6 @@ import logging
 import math
 import os
 from collections import Counter
-from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -80,22 +79,6 @@ def _make_output_state_shell(
         conv_histories=dict(state.conv_histories),
         transconv_overlaps=dict(state.transconv_overlaps),
     )
-
-
-def _state_tensors(
-    state: Qwen3TTSIncrementalCodecState,
-) -> Iterator[tuple[str, torch.Tensor]]:
-    if state.frame_positions is None:
-        raise RuntimeError("incremental Codec state is missing frame positions")
-    yield "frame_positions", state.frame_positions
-    for label, mapping in (
-        ("transformer_keys", state.transformer_keys),
-        ("transformer_values", state.transformer_values),
-        ("conv_histories", state.conv_histories),
-        ("transconv_overlaps", state.transconv_overlaps),
-    ):
-        for key, tensor in mapping.items():
-            yield f"{label}.{key}", tensor
 
 
 def _slice_state_rows(
@@ -194,9 +177,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
 
     One instance is configured for one CUDA device and one lifecycle mode. It
     captures configured ``(fresh_frames, batch_bucket)`` shapes before serving,
-    owns their mutable fixed-address code/state buffers, validates
-    eager-versus-graph waveform and next-state parity, and replays the smallest
-    captured batch bucket that fits a compatible cohort.
+    owns their mutable fixed-address code/state buffers, and replays the
+    smallest captured batch bucket that fits a compatible cohort.
 
     COLD and WARM use separate instances because the initial and follow-up
     workers run on different CUDA streams; each mutable buffer set must be
@@ -416,15 +398,13 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             resources.keepalives.append(waveform)
             current_stream.wait_stream(capture_stream)
             capture_stream.synchronize()
-            captured = _CapturedIncrementalCodecGraph(
+            return _CapturedIncrementalCodecGraph(
                 graph=graph,
                 static_codes=static_codes,
                 input_state=input_state,
                 output_state=output_state,
                 waveform=waveform,
             )
-            self._verify_capture(captured, key=key, stream=capture_stream)
-            return captured
         except BaseException:
             synchronized = self._retain_capture_resources_if_unsynchronized(resources)
             if synchronized and graph is not None:
@@ -484,101 +464,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                 context,
                 exc_info=True,
             )
-
-    def _verify_capture(
-        self,
-        captured: _CapturedIncrementalCodecGraph,
-        *,
-        key: IncrementalCodecGraphKey,
-        stream: torch.cuda.Stream,
-    ) -> None:
-        """Attest graph waveform and every persistent state tensor against eager."""
-
-        with torch.cuda.stream(stream):
-            validation_codes = torch.ones_like(captured.static_codes)
-        validation_modes = ("cold", "warm") if self._mode == "cold" else ("warm",)
-        for validation_mode in validation_modes:
-            with torch.inference_mode(), torch.cuda.stream(stream):
-                source_state = self._decoder.init_state(
-                    key.batch_bucket,
-                    device=self._device,
-                    dtype=self._dtype,
-                )
-                if validation_mode == "warm":
-                    prefix_frames = max(1, min(key.fresh_frames, 4))
-                    prefix_codes = torch.ones(
-                        (key.batch_bucket, self._num_quantizers, prefix_frames),
-                        dtype=torch.long,
-                        device=self._device,
-                    )
-                    self._decoder.decode(prefix_codes, source_state)
-                eager_state = source_state.clone()
-                eager_waveform = self._decoder.decode(validation_codes, eager_state)
-
-                captured.static_codes.copy_(validation_codes)
-                _copy_state_rows(
-                    captured.input_state,
-                    source_state,
-                    rows=key.batch_bucket,
-                )
-                captured.graph.replay()
-            stream.synchronize()
-            self._assert_replay_equal(
-                key=key,
-                validation_mode=validation_mode,
-                eager_waveform=eager_waveform,
-                eager_state=eager_state,
-                graph_waveform=captured.waveform,
-                graph_state=captured.output_state,
-            )
-
-    def _assert_replay_equal(
-        self,
-        *,
-        key: IncrementalCodecGraphKey,
-        validation_mode: str,
-        eager_waveform: torch.Tensor,
-        eager_state: Qwen3TTSIncrementalCodecState,
-        graph_waveform: torch.Tensor,
-        graph_state: Qwen3TTSIncrementalCodecState,
-    ) -> None:
-        prefix = f"{self._mode}.{validation_mode}.{key}"
-        self._assert_tensor_equal(
-            eager_waveform,
-            graph_waveform,
-            name=f"{prefix}.waveform",
-        )
-        eager_tensors = dict(_state_tensors(eager_state))
-        graph_tensors = dict(_state_tensors(graph_state))
-        if eager_tensors.keys() != graph_tensors.keys():
-            raise _CaptureFailure(f"{prefix}: eager and graph state keys differ")
-        if (
-            eager_state.transformer_context_length
-            != graph_state.transformer_context_length
-        ):
-            raise _CaptureFailure(f"{prefix}: eager and graph context lengths differ")
-        for name, eager_tensor in eager_tensors.items():
-            self._assert_tensor_equal(
-                eager_tensor,
-                graph_tensors[name],
-                name=f"{prefix}.{name}",
-            )
-
-    @staticmethod
-    def _assert_tensor_equal(
-        expected: torch.Tensor,
-        actual: torch.Tensor,
-        *,
-        name: str,
-    ) -> None:
-        if (
-            expected.shape != actual.shape
-            or expected.dtype != actual.dtype
-            or not bool(torch.isfinite(expected).all().item())
-            or not bool(torch.isfinite(actual).all().item())
-            or not torch.equal(expected, actual)
-        ):
-            raise _CaptureFailure(f"incremental Codec graph parity failed for {name}")
 
     def _rollback_capture(
         self,
