@@ -7,6 +7,7 @@ import logging
 import queue
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from itertools import count
 from typing import Any, Mapping
@@ -17,6 +18,9 @@ from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateAre
 from sglang_omni.models.qwen3_tts.incremental_codec import (
     Qwen3TTSIncrementalCodecState,
     Qwen3TTSIncrementalDecoder,
+)
+from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
+    Qwen3TTSIncrementalCodecCudaGraphRunner,
 )
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.proto import StagePayload
@@ -39,6 +43,7 @@ DEFAULT_QWEN3_TTS_INITIAL_CHUNK_FRAMES = 8
 DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES = 16
 DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS = 64
 _CODEC_STATS_LOG_INTERVAL_S = 60.0
+_QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES = (1, 2, 4, 8)
 _QWEN3_TTS_CODEBOOK_SIZE = 2048
 
 
@@ -448,6 +453,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         followup_cuda_graph: bool = True,
         enable_stateful_codec_decoder: bool = False,
         codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
+        incremental_codec_cuda_graph: bool = False,
+        incremental_codec_cuda_graph_cold_frames: Sequence[int] = (),
+        incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     ) -> None:
         if stream_stride <= 0 or stream_followup_stride <= 0:
             raise ValueError("stream strides must be > 0")
@@ -510,9 +518,27 @@ class Qwen3TTSStreamingVocoderScheduler(
             raise ValueError("async batch waits must be >= 0")
         if codec_state_slots <= 0:
             raise ValueError("codec_state_slots must be > 0")
+        if incremental_codec_cuda_graph and not enable_stateful_codec_decoder:
+            raise ValueError(
+                "incremental_codec_cuda_graph requires enable_stateful_codec_decoder"
+            )
+        if any(int(frames) <= 0 for frames in incremental_codec_cuda_graph_cold_frames):
+            raise ValueError(
+                "incremental_codec_cuda_graph_cold_frames must be positive"
+            )
         self._tokenizer = tokenizer
         self._device = torch.device(device)
         self._decoder = tokenizer.model.decoder
+        parameters = getattr(self._decoder, "parameters", None)
+        parameter = next(parameters(), None) if callable(parameters) else None
+        codec_state_dtype = parameter.dtype if parameter is not None else torch.float32
+        if (
+            self._device.type == "cuda"
+            and self._device.index is None
+            and parameter is not None
+            and parameter.device.type == "cuda"
+        ):
+            self._device = parameter.device
         tokenizer_config = getattr(tokenizer.model, "config", None)
         decoder_config = getattr(tokenizer_config, "decoder_config", tokenizer_config)
         num_quantizers = int(getattr(decoder_config, "num_quantizers", 0) or 0)
@@ -582,7 +608,21 @@ class Qwen3TTSStreamingVocoderScheduler(
                 else bool(async_decode)
             )
         )
-        self._codec_arena = self._build_codec_arena(int(codec_state_slots))
+        self._codec_arena = self._build_codec_arena(
+            int(codec_state_slots),
+            dtype=codec_state_dtype,
+        )
+        (
+            self._initial_incremental_decode_graphs,
+            self._followup_incremental_decode_graphs,
+        ) = self._build_incremental_graph_runners(
+            dtype=codec_state_dtype,
+            num_quantizers=num_quantizers,
+            codec_state_slots=int(codec_state_slots),
+            enabled=incremental_codec_cuda_graph,
+            cold_frames=incremental_codec_cuda_graph_cold_frames,
+            min_free_gb=incremental_codec_cuda_graph_min_free_gb,
+        )
         self._codec_fallback_count = 0
         self._codec_stats_last_log_s = time.monotonic()
         self._codec_lock = threading.Lock()
@@ -634,13 +674,14 @@ class Qwen3TTSStreamingVocoderScheduler(
             max_batch_wait_ms=max_batch_wait_ms,
         )
 
-    def _build_codec_arena(self, num_slots: int) -> Qwen3TTSCodecStateArena | None:
+    def _build_codec_arena(
+        self,
+        num_slots: int,
+        *,
+        dtype: torch.dtype,
+    ) -> Qwen3TTSCodecStateArena | None:
         if self._incremental_decoder is None:
             return None
-        parameters = getattr(self._decoder, "parameters", None)
-        dtype = torch.float32
-        if callable(parameters):
-            dtype = next(parameters(), torch.zeros(0)).dtype
         arena = Qwen3TTSCodecStateArena(
             self._incremental_decoder,
             num_slots=num_slots,
@@ -658,6 +699,87 @@ class Qwen3TTSStreamingVocoderScheduler(
         )
         return arena
 
+    @staticmethod
+    def _resolve_incremental_warm_graph_batch_sizes(
+        *, max_batch_size: int
+    ) -> tuple[int, ...]:
+        # Note (Shulei He): Select the shortest B1/B2/B4/B8 prefix needed by
+        # the scheduler; cohorts above B8 are split into graph-backed subgroups.
+        for index, batch_size in enumerate(
+            _QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES
+        ):
+            if batch_size >= int(max_batch_size):
+                return _QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES[
+                    : index + 1
+                ]
+        return _QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES
+
+    def _build_incremental_graph_runners(
+        self,
+        *,
+        dtype: torch.dtype,
+        num_quantizers: int,
+        codec_state_slots: int,
+        enabled: bool,
+        cold_frames: Sequence[int],
+        min_free_gb: float,
+    ) -> tuple[
+        Qwen3TTSIncrementalCodecCudaGraphRunner | None,
+        Qwen3TTSIncrementalCodecCudaGraphRunner | None,
+    ]:
+        if self._incremental_decoder is None:
+            return None, None
+
+        graph_enabled = bool(
+            enabled and self._async_decode and not self._deterministic_inference
+        )
+        graph_batch_sizes = self._resolve_incremental_warm_graph_batch_sizes(
+            max_batch_size=min(
+                self._followup_max_batch_size,
+                codec_state_slots,
+            ),
+        )
+        initial = Qwen3TTSIncrementalCodecCudaGraphRunner(
+            self._incremental_decoder,
+            device=self._device,
+            dtype=dtype,
+            num_quantizers=num_quantizers,
+            mode="cold",
+            fresh_frames=tuple(sorted({int(frames) for frames in cold_frames})),
+            batch_sizes=(1,),
+            min_free_gb=min_free_gb,
+            enabled=graph_enabled,
+        )
+        warm_fresh_frames = tuple(
+            sorted(
+                {
+                    *self._followup_stride_ramp,
+                    self._stream_followup_stride,
+                }
+            )
+        )
+        if enabled:
+            logger.info(
+                "Qwen3-TTS incremental Codec graph shapes: "
+                "cold_frames=%s cold_batch_sizes=(1,) "
+                "warm_frames=%s warm_batch_sizes=%s",
+                tuple(sorted({int(frames) for frames in cold_frames})),
+                warm_fresh_frames,
+                graph_batch_sizes,
+            )
+        followup = Qwen3TTSIncrementalCodecCudaGraphRunner(
+            self._incremental_decoder,
+            device=self._device,
+            dtype=dtype,
+            num_quantizers=num_quantizers,
+            mode="warm",
+            fresh_frames=warm_fresh_frames,
+            batch_sizes=graph_batch_sizes,
+            min_free_gb=min_free_gb,
+            enabled=graph_enabled,
+        )
+        return initial, followup
+
     def codec_state_stats(self) -> dict[str, Any]:
         """Snapshot of incremental Codec state usage."""
         if self._codec_arena is None:
@@ -665,6 +787,18 @@ class Qwen3TTSStreamingVocoderScheduler(
         stats = self._codec_arena.describe()
         stats["enabled"] = True
         stats["left_context_fallbacks"] = self._codec_fallback_count
+        stats["cuda_graphs"] = {
+            "cold": (
+                self._initial_incremental_decode_graphs.stats()
+                if self._initial_incremental_decode_graphs is not None
+                else {"enabled": False}
+            ),
+            "warm": (
+                self._followup_incremental_decode_graphs.stats()
+                if self._followup_incremental_decode_graphs is not None
+                else {"enabled": False}
+            ),
+        }
         return stats
 
     def _maybe_log_codec_stats(self) -> None:
@@ -699,6 +833,10 @@ class Qwen3TTSStreamingVocoderScheduler(
             return
         self._initial_decode_graphs.capture()
         self._followup_decode_graphs.capture()
+        if self._initial_incremental_decode_graphs is not None:
+            self._initial_incremental_decode_graphs.capture()
+        if self._followup_incremental_decode_graphs is not None:
+            self._followup_incremental_decode_graphs.capture()
 
     def on_serving_start(self) -> None:
         if not self._async_decode:
@@ -1321,9 +1459,28 @@ class Qwen3TTSStreamingVocoderScheduler(
                     decoder_input, slot if pinned else None
                 )
                 if incremental is not None:
-                    waveform = incremental.decoder.decode(
-                        gpu_input, incremental.cohort_state
+                    incremental_graphs = (
+                        self._initial_incremental_decode_graphs
+                        if stream is self._decode_stream
+                        else (
+                            self._followup_incremental_decode_graphs
+                            if stream is self._followup_decode_stream
+                            else None
+                        )
                     )
+                    graph_result = (
+                        incremental_graphs.decode(gpu_input, incremental.cohort_state)
+                        if incremental_graphs is not None
+                        else None
+                    )
+                    if graph_result is None:
+                        waveform = incremental.decoder.decode(
+                            gpu_input, incremental.cohort_state
+                        )
+                    else:
+                        waveform = graph_result.waveform
+                        incremental.cohort_state = graph_result.state
+                        keepalives.append(graph_result)
                     # Note (Qihao Liu): the scatter is enqueued on the decode
                     # stream right behind the decode that produced it, so the
                     # arena rows are written in stream order. The next decode
@@ -1863,6 +2020,24 @@ class Qwen3TTSStreamingVocoderScheduler(
             groups.setdefault(entry[2].fresh_frames, []).append(entry)
         return list(groups.values())
 
+    def _split_incremental_group_for_graph(
+        self,
+        group: list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]],
+    ) -> list[list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]]]:
+        """Split cohorts above the largest captured bucket instead of falling back."""
+
+        if not group or self._followup_incremental_decode_graphs is None:
+            return [group] if group else []
+        batch_sizes = self._followup_incremental_decode_graphs.available_batch_sizes(
+            group[0][2].fresh_frames
+        )
+        if not batch_sizes:
+            return [group]
+        largest = max(batch_sizes)
+        return [
+            group[index : index + largest] for index in range(0, len(group), largest)
+        ]
+
     def _decode_incremental_group(
         self,
         group: list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]],
@@ -2095,15 +2270,16 @@ class Qwen3TTSStreamingVocoderScheduler(
                 else:
                     planned.append((request_id, state, plan))
 
-        for group in self._group_incremental_plans(planned_incremental):
-            decoded = self._decode_incremental_group(
-                group, stream=self._followup_decode_stream
-            )
-            if decoded is None:
-                continue
-            for entry, delta in zip(*decoded):
-                request_id, state, plan = entry
-                self._commit_followup(request_id, state, plan, delta)
+        for cohort in self._group_incremental_plans(planned_incremental):
+            for group in self._split_incremental_group_for_graph(cohort):
+                decoded = self._decode_incremental_group(
+                    group, stream=self._followup_decode_stream
+                )
+                if decoded is None:
+                    continue
+                for entry, delta in zip(*decoded):
+                    request_id, state, plan = entry
+                    self._commit_followup(request_id, state, plan, delta)
 
         for group in self._group_decode_plans(planned):
             decoded = self._decode_group(group, stream=self._followup_decode_stream)

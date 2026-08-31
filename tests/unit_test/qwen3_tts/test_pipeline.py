@@ -1421,6 +1421,50 @@ def test_qwen3_tts_vocoder_batches_decode_requests(
     assert second_audio.tolist() == [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
 
 
+def test_qwen3_tts_vocoder_factory_forwards_incremental_graph_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    tokenizer = object()
+
+    class FakeScheduler:
+        def __init__(self, actual_tokenizer, **kwargs) -> None:
+            assert actual_tokenizer is tokenizer
+            captured.update(kwargs)
+
+        def warmup_now(self) -> None:
+            captured["warmed"] = True
+
+    monkeypatch.setattr(
+        qwen3_stages,
+        "_load_qwen3_tts_tokenizer",
+        lambda *args, **kwargs: tokenizer,
+    )
+    monkeypatch.setattr(
+        qwen3_stages,
+        "Qwen3TTSStreamingVocoderScheduler",
+        FakeScheduler,
+    )
+
+    scheduler = qwen3_stages.create_vocoder_executor(
+        "model",
+        device="cpu",
+        enable_stateful_codec_decoder=True,
+        codec_state_slots=12,
+        incremental_codec_cuda_graph=True,
+        incremental_codec_cuda_graph_cold_frames=(24, 32),
+        incremental_codec_cuda_graph_min_free_gb=1.5,
+    )
+
+    assert isinstance(scheduler, FakeScheduler)
+    assert captured["enable_stateful_codec_decoder"] is True
+    assert captured["codec_state_slots"] == 12
+    assert captured["incremental_codec_cuda_graph"] is True
+    assert captured["incremental_codec_cuda_graph_cold_frames"] == (24, 32)
+    assert captured["incremental_codec_cuda_graph_min_free_gb"] == 1.5
+    assert captured["warmed"] is True
+
+
 class _FakeQwen3TTSDecoder:
     total_upsample = 4
 
@@ -1515,6 +1559,7 @@ def _stateful_qwen3_tts_scheduler(
     fail_on_call: int | None = None,
     stream_left_context_frames: int = 1,
     stream_followup_stride: int = DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
+    stream_chunk_ramp: tuple[int, ...] | None = None,
 ) -> tuple[Qwen3TTSStreamingVocoderScheduler, _FakeIncrementalQwen3TTSDecoder]:
     created = []
 
@@ -1537,9 +1582,21 @@ def _stateful_qwen3_tts_scheduler(
         initial_cuda_graph=True,
         stream_left_context_frames=stream_left_context_frames,
         stream_followup_stride=stream_followup_stride,
+        stream_chunk_ramp=stream_chunk_ramp,
         enable_stateful_codec_decoder=True,
     )
     return scheduler, created[0]
+
+
+def test_qwen3_tts_stateful_codec_graph_shapes_follow_chunk_ramp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _ = _stateful_qwen3_tts_scheduler(
+        monkeypatch,
+        stream_chunk_ramp=(2, 4, 6),
+    )
+
+    assert scheduler._followup_incremental_decode_graphs._fresh_frames == (4, 6, 8)
 
 
 def test_qwen3_tts_stateful_codec_uses_reference_once_then_fresh_frames(
