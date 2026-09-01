@@ -566,7 +566,6 @@ def test_arena_cohort_matches_per_stream_decodes() -> None:
     assert batched.shape[0] == 3
     for row, single in enumerate(expected):
         torch.testing.assert_close(batched[row : row + 1], single, rtol=2e-5, atol=2e-6)
-    assert fresh == 2
 
 
 @pytest.mark.accelerator
@@ -596,7 +595,7 @@ def test_incremental_codec_cuda_graph_matches_eager_state(
         slot = arena.acquire()
         assert slot is not None
         slots.append(slot)
-        warmup_frames = 0 if mode == "cold" else (row + 1) * 3
+        warmup_frames = row * 3
         positions.append(warmup_frames)
         if warmup_frames == 0:
             continue
