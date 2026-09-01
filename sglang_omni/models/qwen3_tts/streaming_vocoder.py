@@ -709,9 +709,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             _QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES
         ):
             if batch_size >= int(max_batch_size):
-                return _QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES[
-                    : index + 1
-                ]
+                return _QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES[: index + 1]
         return _QWEN3_TTS_INCREMENTAL_CODEC_WARM_GRAPH_BATCH_SIZES
 
     def _build_incremental_graph_runners(
