@@ -688,13 +688,14 @@ def test_ming_text_launcher_rejects_duplicate_gpu_ids(monkeypatch) -> None:
         _launch_text_server(args)
 
 
-def test_ming_thinker_factory_registers_hf_config_before_server_args(
+def test_ming_thinker_factory_registers_config_and_forwards_tp_size(
     monkeypatch,
 ) -> None:
     from sglang_omni.models.ming_omni import stages
 
     call_order: list[str] = []
     captured_server_args_kwargs: dict[str, object] = {}
+    built_server_args = object()
     validations: list[str] = []
 
     registration_module = ModuleType("sglang_omni.models.ming_omni.registration")
@@ -716,7 +717,7 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
         assert call_order == ["register"]
         call_order.append("build_server_args")
         captured_server_args_kwargs.update(kwargs)
-        return SimpleNamespace(tp_size=1)
+        return built_server_args
 
     backend_module.build_sglang_server_args = build_sglang_server_args
     from sglang_omni.scheduling.sglang_backend import pin_resolved_device_type
@@ -745,7 +746,7 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
     policy_module.build_generation_batch_overrides = build_generation_batch_overrides
 
     def validate_generation_batch_policy(*, model_name, server_args):
-        assert server_args.tp_size == 1
+        assert server_args is built_server_args
         validations.append(model_name)
 
     policy_module.validate_generation_batch_policy = validate_generation_batch_policy
@@ -757,8 +758,9 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
 
     bootstrap_module = ModuleType("sglang_omni.models.ming_omni.bootstrap")
 
-    def create_thinker_scheduler(*args, **kwargs):
-        del args, kwargs
+    def create_thinker_scheduler(server_args, **kwargs):
+        assert server_args is built_server_args
+        assert kwargs["tp_size"] == 2
         call_order.append("create_scheduler")
         return object()
 
@@ -769,9 +771,10 @@ def test_ming_thinker_factory_registers_hf_config_before_server_args(
         bootstrap_module,
     )
 
-    stages.create_sglang_thinker_executor_from_config(model_path="dummy")
+    stages.create_sglang_thinker_executor_from_config(model_path="dummy", tp_size=2)
 
     assert call_order == ["register", "build_server_args", "create_scheduler"]
+    assert captured_server_args_kwargs["tp_size"] == 2
     assert captured_server_args_kwargs["trust_remote_code"] is False
     assert captured_server_args_kwargs["sampling_backend"] == "pytorch"
     assert captured_server_args_kwargs["disable_cuda_graph"] is False

@@ -79,7 +79,6 @@ def test_ming_thinker_weight_loader_uses_qwen3_helper_path() -> None:
 
 
 def test_ming_thinker_forward_accepts_the_sidecar_kwargs() -> None:
-    pytest.importorskip("sglang")
     from sglang_omni.models.ming_omni.thinker import BailingMoeV2ForCausalLM
 
     params = inspect.signature(BailingMoeV2ForCausalLM.forward).parameters
