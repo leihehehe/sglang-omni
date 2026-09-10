@@ -491,6 +491,25 @@ def test_ming_runner_text_prefill_attaches_private_sidecar(monkeypatch) -> None:
     assert result is None
 
 
+@pytest.mark.parametrize("field", ["input_embeds", "replace_embeds"])
+def test_ming_runner_rejects_upstream_embedding_field_conflicts(
+    monkeypatch,
+    field,
+) -> None:
+    torch, runner_cls = _load_runner_with_fake_sglang(monkeypatch)
+    runner = _fake_runner(torch, runner_cls, image=3)
+    model_inputs = {"image_embeds": torch.tensor([[20.0, 21.0]])}
+    req = _fake_req(model_inputs, rid="conflicting-embeds")
+    forward_batch, schedule_batch = _fake_batch(torch, [3], req)
+    setattr(forward_batch, field, torch.zeros(1, 2))
+
+    with pytest.raises(RuntimeError, match=field):
+        runner.before_prefill(forward_batch, schedule_batch, [req])
+
+    assert req.omni_model_inputs is model_inputs
+    assert req._omni_consumed is None
+
+
 def test_ming_runner_multimodal_prefill_attaches_current_request_rows(
     monkeypatch,
 ) -> None:

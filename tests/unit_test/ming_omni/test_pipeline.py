@@ -10,6 +10,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from examples.launchers.ming_omni import (
@@ -688,8 +689,17 @@ def test_ming_text_launcher_rejects_duplicate_gpu_ids(monkeypatch) -> None:
         _launch_text_server(args)
 
 
+@pytest.mark.parametrize(
+    ("server_args_overrides", "expected_operator_selected"),
+    [
+        (None, False),
+        ({"cuda_graph_backend_prefill": "breakable"}, True),
+    ],
+)
 def test_ming_thinker_factory_registers_config_and_forwards_tp_size(
     monkeypatch,
+    server_args_overrides,
+    expected_operator_selected,
 ) -> None:
     from sglang_omni.models.ming_omni import stages
 
@@ -744,6 +754,9 @@ def test_ming_thinker_factory_registers_config_and_forwards_tp_size(
         }
 
     policy_module.build_generation_batch_overrides = build_generation_batch_overrides
+    policy_module.operator_selected_prefill_backend = lambda overrides: bool(
+        overrides and overrides.get("cuda_graph_backend_prefill") is not None
+    )
 
     def validate_generation_batch_policy(*, model_name, server_args):
         assert server_args is built_server_args
@@ -761,6 +774,7 @@ def test_ming_thinker_factory_registers_config_and_forwards_tp_size(
     def create_thinker_scheduler(server_args, **kwargs):
         assert server_args is built_server_args
         assert kwargs["tp_size"] == 2
+        assert kwargs["operator_selected_prefill_backend"] is expected_operator_selected
         call_order.append("create_scheduler")
         return object()
 
@@ -771,7 +785,11 @@ def test_ming_thinker_factory_registers_config_and_forwards_tp_size(
         bootstrap_module,
     )
 
-    stages.create_sglang_thinker_executor_from_config(model_path="dummy", tp_size=2)
+    stages.create_sglang_thinker_executor_from_config(
+        model_path="dummy",
+        tp_size=2,
+        server_args_overrides=server_args_overrides,
+    )
 
     assert call_order == ["register", "build_server_args", "create_scheduler"]
     assert captured_server_args_kwargs["tp_size"] == 2

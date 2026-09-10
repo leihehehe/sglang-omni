@@ -390,12 +390,22 @@ def test_ming_speech_allows_talker_outside_explicit_thinker_tp_gpus() -> None:
 
 
 @pytest.mark.parametrize(
-    ("prefill_backend", "expected_input_embeds", "expected_attestations"),
-    [("disabled", False, 0), ("breakable", True, 1)],
+    (
+        "prefill_backend",
+        "operator_selected",
+        "expected_input_embeds",
+        "expected_attestations",
+    ),
+    [
+        ("disabled", False, False, []),
+        ("breakable", False, True, [False]),
+        ("breakable", True, True, [True]),
+    ],
 )
 def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     monkeypatch,
     prefill_backend,
+    operator_selected,
     expected_input_embeds,
     expected_attestations,
 ) -> None:
@@ -536,6 +546,7 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
         tp_rank=1,
         tp_size=2,
         nccl_port=29500,
+        operator_selected_prefill_backend=operator_selected,
     )
 
     assert captured["server_args_tp_size"] == 2
@@ -545,9 +556,9 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     assert captured["nccl_port"] == 29500
     assert captured["model_arch_override"] == "BailingMoeV2ForCausalLM"
     assert captured["enable_prefill_input_embeds"] is expected_input_embeds
-    assert attestations == (
-        [(captured["model_runner"], True)] if expected_attestations else []
-    )
+    assert attestations == [
+        (captured["model_runner"], value) for value in expected_attestations
+    ]
     assert scheduler.kwargs["server_args"] is server_args
 
 

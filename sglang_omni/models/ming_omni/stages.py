@@ -305,6 +305,7 @@ def create_sglang_thinker_executor_from_config(
     from sglang_omni.models.ming_omni.registration import register_ming_hf_config
     from sglang_omni.scheduling.generation_batch_policy import (
         build_generation_batch_overrides,
+        operator_selected_prefill_backend,
         validate_generation_batch_policy,
     )
     from sglang_omni.scheduling.sglang_backend import (
@@ -317,7 +318,7 @@ def create_sglang_thinker_executor_from_config(
 
     concrete_device = resolve_concrete_device(device, gpu_id)
     gpu_id = concrete_device.index or 0
-
+    operator_selected = operator_selected_prefill_backend(server_args_overrides)
     overrides = build_generation_batch_overrides(
         max_running_requests=16,
         server_args_overrides=server_args_overrides,
@@ -344,6 +345,7 @@ def create_sglang_thinker_executor_from_config(
         tp_size=tp_size,
         nccl_port=nccl_port,
         enable_streaming_tts=enable_streaming_tts,
+        operator_selected_prefill_backend=operator_selected,
     )
 
 

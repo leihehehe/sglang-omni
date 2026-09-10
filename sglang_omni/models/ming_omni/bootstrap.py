@@ -24,6 +24,7 @@ def create_thinker_scheduler(
     tp_size: int = 1,
     nccl_port: int | None = None,
     enable_streaming_tts: bool = False,
+    operator_selected_prefill_backend: bool = False,
 ):
     if tp_size < 1:
         raise ValueError(f"tp_size must be >= 1, got {tp_size}")
@@ -76,7 +77,7 @@ def create_thinker_scheduler(
     if enable_prefill_input_embeds:
         attest_prefill_cuda_graphs(
             model_worker.model_runner,
-            operator_selected=True,
+            operator_selected=operator_selected_prefill_backend,
         )
 
     output_proc = SGLangOutputProcessor(
