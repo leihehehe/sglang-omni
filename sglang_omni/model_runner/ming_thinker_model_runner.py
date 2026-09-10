@@ -64,15 +64,13 @@ class MingThinkerModelRunner(ModelRunner):
         del requests
         if not schedule_batch.forward_mode.is_extend():
             return None
-        conflicts = [
-            name
-            for name in ("input_embeds", "replace_embeds")
-            if getattr(forward_batch, name, None) is not None
-        ]
-        if conflicts:
+        if getattr(forward_batch, "input_embeds", None) is not None:
             raise RuntimeError(
-                "Ming prefill sidecar requires upstream embedding fields to "
-                f"be unset; populated: {', '.join(conflicts)}"
+                "Ming prefill sidecar requires forward_batch.input_embeds to be unset"
+            )
+        if getattr(forward_batch, "replace_embeds", None) is not None:
+            raise RuntimeError(
+                "Ming prefill sidecar requires forward_batch.replace_embeds to be unset"
             )
 
         input_embeds = self._inject_multimodal_embeds(forward_batch, schedule_batch)
