@@ -179,7 +179,11 @@ class BailingMoeV2Attention(nn.Module):
         q = torch.cat([q_rot, q_pass], dim=-1)
         k = torch.cat([k_rot, k_pass], dim=-1)
 
-        return q, k, v
+        return (
+            q.reshape(-1, self.q_size),
+            k.reshape(-1, self.kv_size),
+            v.reshape(-1, self.kv_size),
+        )
 
     def forward_core(
         self,

@@ -11,6 +11,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+import torch
 
 BOOTSTRAP_PATH = Path("sglang_omni/models/ming_omni/bootstrap.py")
 RUNNER_PATH = Path("sglang_omni/model_runner/ming_thinker_model_runner.py")
@@ -84,6 +85,37 @@ def test_ming_thinker_forward_accepts_the_sidecar_kwargs() -> None:
     params = inspect.signature(BailingMoeV2ForCausalLM.forward).parameters
     assert "input_embeds" in params
     assert "omni_prefill_rids" in params
+
+
+def test_ming_attention_flattens_heads_before_radix_attention() -> None:
+    from torch import nn
+
+    from sglang_omni.models.ming_omni.thinker import BailingMoeV2Attention
+
+    qkv = torch.arange(48, dtype=torch.float32).reshape(3, 16)
+    attention = BailingMoeV2Attention.__new__(BailingMoeV2Attention)
+    nn.Module.__init__(attention)
+    attention.q_size = 8
+    attention.kv_size = 4
+    attention.num_heads_per_tp = 2
+    attention.num_kv_heads_per_tp = 1
+    attention.head_dim = 4
+    attention.rotary_dim = 2
+    attention.use_qk_norm = False
+    attention.qkv_proj = lambda hidden_states: (qkv, None)
+    attention.rotary_emb = lambda positions, q, k: (q, k)
+
+    q, k, v = attention.forward_prepare(
+        torch.empty(3, 16),
+        SimpleNamespace(positions=torch.arange(3)),
+    )
+
+    assert q.shape == (3, 8)
+    assert k.shape == (3, 4)
+    assert v.shape == (3, 4)
+    torch.testing.assert_close(q, qkv[:, :8])
+    torch.testing.assert_close(k, qkv[:, 8:12])
+    torch.testing.assert_close(v, qkv[:, 12:])
 
 
 def test_ming_image_encoder_keeps_its_tp_context_for_runtime_forward() -> None:
