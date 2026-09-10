@@ -74,7 +74,10 @@ def create_thinker_scheduler(
         enable_prefill_input_embeds=enable_prefill_input_embeds,
     )
     if enable_prefill_input_embeds:
-        attest_prefill_cuda_graphs(model_worker.model_runner, server_args)
+        attest_prefill_cuda_graphs(
+            model_worker.model_runner,
+            operator_selected=True,
+        )
 
     output_proc = SGLangOutputProcessor(
         capture_hidden=False,

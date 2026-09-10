@@ -399,12 +399,16 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     expected_input_embeds,
     expected_attestations,
 ) -> None:
+    from unittest.mock import create_autospec
+
     from sglang.srt.arg_groups.overrides import resolution_result
     from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
     from sglang.srt.server_args import ServerArgs
 
+    from sglang_omni.utils.cuda_graph_batch_validator import attest_prefill_cuda_graphs
+
     captured: dict[str, object] = {}
-    attestations: list[tuple[object, object]] = []
+    attestations: list[tuple[object, bool]] = []
 
     common_module = ModuleType("sglang_omni.models.ming_omni.components.common")
     common_module.load_ming_tokenizer = lambda _model_path: SimpleNamespace(
@@ -476,8 +480,13 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     )
 
     validator_module = ModuleType("sglang_omni.utils.cuda_graph_batch_validator")
-    validator_module.attest_prefill_cuda_graphs = (
-        lambda model_runner, args: attestations.append((model_runner, args))
+
+    def fake_attest_prefill_cuda_graphs(model_runner, *, operator_selected):
+        attestations.append((model_runner, operator_selected))
+
+    validator_module.attest_prefill_cuda_graphs = create_autospec(
+        attest_prefill_cuda_graphs,
+        side_effect=fake_attest_prefill_cuda_graphs,
     )
     monkeypatch.setitem(
         sys.modules,
@@ -537,7 +546,7 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     assert captured["model_arch_override"] == "BailingMoeV2ForCausalLM"
     assert captured["enable_prefill_input_embeds"] is expected_input_embeds
     assert attestations == (
-        [(captured["model_runner"], server_args)] if expected_attestations else []
+        [(captured["model_runner"], True)] if expected_attestations else []
     )
     assert scheduler.kwargs["server_args"] is server_args
 
