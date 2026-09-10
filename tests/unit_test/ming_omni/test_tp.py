@@ -400,6 +400,7 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
     expected_attestations,
 ) -> None:
     from sglang.srt.arg_groups.overrides import resolution_result
+    from sglang.srt.model_executor.cuda_graph_config import CudaGraphConfig
     from sglang.srt.server_args import ServerArgs
 
     captured: dict[str, object] = {}
@@ -512,7 +513,10 @@ def test_ming_bootstrap_aligns_server_args_tp_size_before_infra(
 
     bootstrap = importlib.import_module("sglang_omni.models.ming_omni.bootstrap")
     server_args = ServerArgs(
-        model_path="dummy", cuda_graph_backend_prefill=prefill_backend
+        model_path="dummy",
+        cuda_graph_config=CudaGraphConfig.from_dict(
+            {"prefill": {"backend": prefill_backend}}
+        ),
     )
     server_args.resolve_once()
 
