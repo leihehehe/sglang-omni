@@ -304,6 +304,7 @@ def create_sglang_thinker_executor_from_config(
     from sglang_omni.models.ming_omni.bootstrap import create_thinker_scheduler
     from sglang_omni.models.ming_omni.registration import register_ming_hf_config
     from sglang_omni.scheduling.generation_batch_policy import (
+        CudaGraphBackend,
         build_generation_batch_overrides,
         operator_selected_prefill_backend,
         validate_generation_batch_policy,
@@ -326,6 +327,16 @@ def create_sglang_thinker_executor_from_config(
         sampling_backend="pytorch",
         trust_remote_code=False,
     )
+    if (
+        operator_selected
+        and overrides.get("cuda_graph_backend_prefill") == CudaGraphBackend.BREAKABLE
+        and not overrides.get("cuda_graph_bs_prefill")
+    ):
+        raise ValueError(
+            "Ming-Omni thinker explicit breakable prefill CUDA graph backend "
+            "requires cuda_graph_max_bs_prefill, cuda_graph_bs_prefill, or "
+            "chunked_prefill_size"
+        )
     overrides["tp_size"] = tp_size
     pin_resolved_device_type(overrides, concrete_device.type)
     server_args = build_sglang_server_args(

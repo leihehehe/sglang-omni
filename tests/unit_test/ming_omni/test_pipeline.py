@@ -690,16 +690,29 @@ def test_ming_text_launcher_rejects_duplicate_gpu_ids(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("server_args_overrides", "expected_operator_selected"),
+    (
+        "server_args_overrides",
+        "expected_operator_selected",
+        "expected_missing_ladder_error",
+    ),
     [
-        (None, False),
-        ({"cuda_graph_backend_prefill": "breakable"}, True),
+        (None, False, False),
+        (
+            {
+                "cuda_graph_backend_prefill": "breakable",
+                "cuda_graph_bs_prefill": [128, 256],
+            },
+            True,
+            False,
+        ),
+        ({"cuda_graph_backend_prefill": "breakable"}, True, True),
     ],
 )
 def test_ming_thinker_factory_registers_config_and_forwards_tp_size(
     monkeypatch,
     server_args_overrides,
     expected_operator_selected,
+    expected_missing_ladder_error,
 ) -> None:
     from sglang_omni.models.ming_omni import stages
 
@@ -740,6 +753,7 @@ def test_ming_thinker_factory_registers_config_and_forwards_tp_size(
     )
 
     policy_module = ModuleType("sglang_omni.scheduling.generation_batch_policy")
+    policy_module.CudaGraphBackend = SimpleNamespace(BREAKABLE="breakable")
 
     def build_generation_batch_overrides(
         *,
@@ -785,10 +799,21 @@ def test_ming_thinker_factory_registers_config_and_forwards_tp_size(
         bootstrap_module,
     )
 
+    if expected_missing_ladder_error:
+        with pytest.raises(
+            ValueError,
+            match="explicit breakable.*requires.*cuda_graph_max_bs_prefill",
+        ):
+            stages.create_sglang_thinker_executor_from_config(
+                model_path="dummy",
+                tp_size=2,
+                server_args_overrides=server_args_overrides,
+            )
+        assert call_order == ["register"]
+        return
+
     stages.create_sglang_thinker_executor_from_config(
-        model_path="dummy",
-        tp_size=2,
-        server_args_overrides=server_args_overrides,
+        model_path="dummy", tp_size=2, server_args_overrides=server_args_overrides
     )
 
     assert call_order == ["register", "build_server_args", "create_scheduler"]
