@@ -270,8 +270,9 @@ def test_ming_preprocessor_uses_config_image_patch_token_id(monkeypatch) -> None
 
 
 def test_ming_video_preprocessor_uses_transformers_5_contract(monkeypatch) -> None:
-    from sglang_omni.preprocessing.video import load_video_path
     from transformers import Qwen2VLVideoProcessor
+
+    from sglang_omni.preprocessing.video import load_video_path
 
     module = _load_preprocessor_with_fake_deps(monkeypatch)
     processor = module.MingPreprocessor.__new__(module.MingPreprocessor)
